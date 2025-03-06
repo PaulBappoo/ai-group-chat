@@ -1,0 +1,6 @@
+# Python, config, and OS files
+config.json
+__pycache__/
+*.pyc
+.env
+.DS_Store
