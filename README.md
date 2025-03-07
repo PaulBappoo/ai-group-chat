@@ -8,6 +8,7 @@ A Streamlit application for group chat with 4 AI participants and a human user. 
 - Configure custom system prompts for each AI
 - Collaborative discussion where AIs build on each other's ideas
 - Structured multi-round discussions for in-depth problem solving
+- Configurable discussion length with Max Rounds Per Prompt setting
 - Simple setup with OpenRouter API key
 - Robust error handling for model availability
 - Persistent configuration storage (saves API key and prompts)
@@ -34,13 +35,14 @@ A Streamlit application for group chat with 4 AI participants and a human user. 
 
 3. Configure the application:
    - Enter your OpenRouter API key (get one from https://openrouter.ai/keys)
+   - Set the Max Rounds Per Prompt (1-10) to control discussion length
    - Customize the system prompts for each AI participant
    - Choose whether to save your configuration to disk
    - Click "Save and Start Chat" to begin
 
 ## Configuration Persistence
 
-The application can save your configuration (API key and system prompts) to a local file:
+The application can save your configuration (API key, system prompts, and max rounds) to a local file:
 
 - By default, settings are saved to `config.json` in the application directory
 - File permissions are set to be readable only by the owner (on Unix systems)
@@ -56,7 +58,7 @@ When a user submits a message:
    - Each AI builds on previous ideas and perspectives
    - AIs are encouraged to highlight connections between different viewpoints
    - The collective goal is to work toward a comprehensive solution
-3. After several structured rounds of discussion (usually 5 rounds total), a summary is generated
+3. After the number of rounds specified by Max Rounds Per Prompt, a summary is generated
 4. The summary highlights key points, agreements, and the collective solution reached
 5. The entire discussion remains visible, with the summary clearly demarcated
 
@@ -65,7 +67,7 @@ When a user submits a message:
 1. Type your message or question in the input box at the bottom of the chat interface
 2. Watch as the AIs engage in a collaborative discussion around your topic
 3. Each AI will build upon previous responses to develop a more comprehensive solution
-4. After several rounds of discussion, a summary of key points and the collective solution is generated
+4. After the configured number of rounds, a summary of key points and the collective solution is generated
 5. You can return to the setup screen at any time by clicking the "⚙️ Setup" button
 6. If any models encounter errors, they will be displayed in an expandable section at the top of the chat
 

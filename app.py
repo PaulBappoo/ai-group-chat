@@ -43,7 +43,8 @@ def save_config():
     """Save the current configuration to a file."""
     config = {
         "openrouter_api_key": st.session_state.openrouter_api_key,
-        "system_prompts": st.session_state.system_prompts
+        "system_prompts": st.session_state.system_prompts,
+        "max_rounds_per_prompt": st.session_state.max_rounds_per_prompt
     }
     
     # Create a secure file with restricted permissions
@@ -71,6 +72,7 @@ def load_config():
             # Update session state with loaded values
             st.session_state.openrouter_api_key = config.get("openrouter_api_key", "")
             st.session_state.system_prompts = config.get("system_prompts", {})
+            st.session_state.max_rounds_per_prompt = config.get("max_rounds_per_prompt", 5)
             
             # If system_prompts doesn't contain all AI participants, initialize the missing ones
             for ai_name in AI_PARTICIPANTS.keys():
@@ -109,6 +111,8 @@ if 'summary_generated' not in st.session_state:
     st.session_state.summary_generated = False
 if 'discussion_messages' not in st.session_state:
     st.session_state.discussion_messages = []
+if 'max_rounds_per_prompt' not in st.session_state:
+    st.session_state.max_rounds_per_prompt = 5  # Default to 5 rounds
 
 def setup_view():
     """Display the setup view for configuring the OpenRouter API key and system prompts."""
@@ -119,6 +123,16 @@ def setup_view():
                            value=st.session_state.openrouter_api_key,
                            type="password", 
                            help="You can get this from https://openrouter.ai/keys")
+    
+    # Max Rounds Per Prompt input
+    max_rounds = st.number_input(
+        "Max Rounds Per Prompt",
+        min_value=1,
+        max_value=10,
+        value=st.session_state.max_rounds_per_prompt,
+        step=1,
+        help="Maximum number of rounds of discussion before generating a summary. Each AI will respond once per round."
+    )
     
     st.subheader("System Prompts for AI Participants")
     st.write("Configure how each AI participant should behave in the conversation")
@@ -139,6 +153,7 @@ def setup_view():
     if st.button("Save and Start Chat"):
         st.session_state.openrouter_api_key = api_key
         st.session_state.system_prompts = system_prompts
+        st.session_state.max_rounds_per_prompt = max_rounds
         
         # Save configuration if requested
         if save_config_option:
@@ -399,8 +414,8 @@ def generate_ai_responses():
             st.rerun()
     
     # Collaborative discussion phase - multiple rounds of follow-ups
-    elif len(st.session_state.messages) >= 2 and st.session_state.discussion_counter < 5:
-        # Always do at least 2 rounds (up to 5) to ensure collaborative discussion
+    elif len(st.session_state.messages) >= 2 and st.session_state.discussion_counter < st.session_state.max_rounds_per_prompt:
+        # Continue discussion until we reach the max_rounds_per_prompt limit
         st.session_state.active_discussion = True
         
         # Select the next AI to build on the discussion
@@ -432,13 +447,13 @@ def generate_ai_responses():
         st.session_state.active_discussion = False
         
         # Check if we've reached the end of the discussion rounds
-        if st.session_state.discussion_counter >= 5:  # After completing 5 rounds
+        if st.session_state.discussion_counter >= st.session_state.max_rounds_per_prompt:
             st.session_state.waiting_for_summary = True
         
         st.rerun()
     
     # After all discussion rounds, generate a summary
-    elif st.session_state.discussion_counter >= 5 and not st.session_state.waiting_for_summary:
+    elif st.session_state.discussion_counter >= st.session_state.max_rounds_per_prompt and not st.session_state.waiting_for_summary:
         st.session_state.waiting_for_summary = True
         st.rerun()
 
