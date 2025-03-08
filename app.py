@@ -4,6 +4,11 @@ import json
 import os
 from datetime import datetime
 from pathlib import Path
+from document_processor import (
+    extract_text, process_document, get_embedding_model,
+    setup_chroma, generate_embeddings, store_chunks, 
+    retrieve_relevant_chunks, simple_search
+)
 
 # Set page configuration
 st.set_page_config(page_title="AI Group Chat", layout="wide")
@@ -113,6 +118,12 @@ if 'discussion_messages' not in st.session_state:
     st.session_state.discussion_messages = []
 if 'max_rounds_per_prompt' not in st.session_state:
     st.session_state.max_rounds_per_prompt = 5  # Default to 5 rounds
+if 'has_document' not in st.session_state:
+    st.session_state.has_document = False
+if 'document_name' not in st.session_state:
+    st.session_state.document_name = None
+if 'current_query' not in st.session_state:
+    st.session_state.current_query = None
 
 def setup_view():
     """Display the setup view for configuring the OpenRouter API key and system prompts."""
@@ -224,6 +235,8 @@ def get_ai_response(ai_name, message_history, is_summary=False):
         6. If you truly don't have a meaningful contribution, respond with 'SKIP_RESPONSE'
         7. Consider how your expertise complements what others have said
         8. If appropriate, synthesize or integrate previous points into a more cohesive view
+        
+        If the user has provided document context, make sure to use that information in your response.
         """
     
     combined_prompt = f"{system_prompt}\n\n{additional_context}"
@@ -231,14 +244,29 @@ def get_ai_response(ai_name, message_history, is_summary=False):
     # Prepare messages for API call
     messages = [{"role": "system", "content": combined_prompt}]
     
-    # Add message history
-    for msg in message_history:
-        role = "assistant" if msg["role"] in AI_PARTICIPANTS else msg["role"]
-        content = msg["content"]
-        # Identify who is speaking for context
-        if role == "assistant":
-            content = f"[{msg['role']}]: {content}"
-        messages.append({"role": role, "content": content})
+    # Use the current_query (with document context) for the first AI response
+    if len(message_history) > 0 and message_history[-1]["role"] == "user" and hasattr(st.session_state, 'current_query'):
+        # Replace the last user message with the enhanced version containing document context
+        for i in range(len(message_history) - 1):
+            msg = message_history[i]
+            role = "assistant" if msg["role"] in AI_PARTICIPANTS else msg["role"]
+            content = msg["content"]
+            # Identify who is speaking for context
+            if role == "assistant":
+                content = f"[{msg['role']}]: {content}"
+            messages.append({"role": role, "content": content})
+        
+        # Add the enhanced message with document context
+        messages.append({"role": "user", "content": st.session_state.current_query})
+    else:
+        # Add message history normally
+        for msg in message_history:
+            role = "assistant" if msg["role"] in AI_PARTICIPANTS else msg["role"]
+            content = msg["content"]
+            # Identify who is speaking for context
+            if role == "assistant":
+                content = f"[{msg['role']}]: {content}"
+            messages.append({"role": role, "content": content})
     
     # Add a special instruction based on the response type
     if is_summary:
@@ -277,55 +305,126 @@ def chat_view():
     """Display the chat interface."""
     st.title("AI Group Chat")
     
-    # Display setup button to return to setup view
-    if st.button("⚙️ Setup"):
-        st.session_state.setup_complete = False
-        st.rerun()
+    # Set up columns for document upload and chat
+    col1, col2 = st.columns([1, 3])
     
-    # Display any model errors in a collapsible section
-    if st.session_state.model_errors:
-        with st.expander("Model Errors (Click to expand)"):
-            st.error("Some models encountered errors in the last request:")
-            for model, error in st.session_state.model_errors.items():
-                st.write(f"**{model}**: {error}")
-            if st.button("Clear Errors"):
-                st.session_state.model_errors = {}
+    # Initialize document storage in session state if not present
+    if "doc_chunks" not in st.session_state:
+        st.session_state.doc_chunks = []
+        
+    if "doc_name" not in st.session_state:
+        st.session_state.doc_name = None
+    
+    with col1:
+        # Document upload section
+        st.subheader("Document Upload")
+        uploaded_file = st.file_uploader("Upload document for discussion", type=["txt", "pdf"])
+        
+        if uploaded_file:
+            try:
+                # Only process if it's a new document
+                if st.session_state.doc_name != uploaded_file.name:
+                    with st.spinner("Processing document..."):
+                        # Extract text from uploaded file
+                        text = extract_text(uploaded_file)
+                        
+                        # Process document into chunks
+                        chunks = process_document(text)
+                        
+                        # Store in session state directly (no embeddings)
+                        st.session_state.doc_chunks = chunks
+                        st.session_state.doc_name = uploaded_file.name
+                        st.session_state.has_document = True
+                        
+                        st.success(f"Document processed: {len(chunks)} chunks created")
+            except Exception as e:
+                st.error(f"Error processing document: {str(e)}")
+        
+        # Show document status
+        if st.session_state.get('has_document', False):
+            st.info(f"Active document: {st.session_state.get('doc_name', 'Document')}")
+            if st.button("Clear Document"):
+                st.session_state.has_document = False
+                st.session_state.doc_chunks = []
+                st.session_state.doc_name = None
                 st.rerun()
     
-    # Display the chat history
-    chat_container = st.container()
-    with chat_container:
-        for message in st.session_state.messages:
-            if message["role"] == "user":
-                st.chat_message("user", avatar="👤").write(message["content"])
-            elif message["role"] == "summary":
-                # Display summary in a distinctive way
-                st.markdown("---")
-                st.markdown(message["content"], unsafe_allow_html=True)
-                st.markdown("---")
+    with col2:
+        # Display chat header
+        st.subheader("AI Group Chat")
+        
+        # Display setup button to return to setup view
+        if st.button("⚙️ Setup"):
+            st.session_state.setup_complete = False
+            st.rerun()
+        
+        # Display any model errors in a collapsible section
+        if st.session_state.model_errors:
+            with st.expander("Model Errors (Click to expand)"):
+                st.error("Some models encountered errors in the last request:")
+                for model, error in st.session_state.model_errors.items():
+                    st.write(f"**{model}**: {error}")
+                if st.button("Clear Errors"):
+                    st.session_state.model_errors = {}
+                    st.rerun()
+        
+        # Display the chat history
+        chat_container = st.container()
+        with chat_container:
+            for message in st.session_state.messages:
+                if message["role"] == "user":
+                    st.chat_message("user", avatar="👤").write(message["content"])
+                elif message["role"] == "summary":
+                    # Display summary in a distinctive way
+                    st.markdown("---")
+                    st.markdown(message["content"], unsafe_allow_html=True)
+                    st.markdown("---")
+                else:
+                    ai_name = message["role"]
+                    color = AI_PARTICIPANTS[ai_name]["color"]
+                    st.chat_message(ai_name, avatar=f"🤖").markdown(
+                        f"<span style='color:{color}'><strong>{ai_name}:</strong> {message['content']}</span>", 
+                        unsafe_allow_html=True
+                    )
+    
+        # Input for user message
+        user_input = st.chat_input("Type your message here...")
+        
+        if user_input:
+            # Process user input with document context if available
+            if st.session_state.get('has_document', False) and st.session_state.doc_chunks:
+                # Use simple search to find relevant chunks
+                relevant_chunks = simple_search(user_input, st.session_state.doc_chunks)
+                
+                # Format context message with retrieved chunks
+                if relevant_chunks:
+                    context = "\n\n".join(relevant_chunks)
+                    enhanced_input = f"User question: {user_input}\n\nRelevant document context:\n{context}\n\nPlease use the document context to help answer the question."
+                    
+                    # Store original query for display, but use enhanced input for processing
+                    display_message = user_input
+                    process_message = enhanced_input
+                else:
+                    display_message = user_input
+                    process_message = user_input
             else:
-                ai_name = message["role"]
-                color = AI_PARTICIPANTS[ai_name]["color"]
-                st.chat_message(ai_name, avatar=f"🤖").markdown(
-                    f"<span style='color:{color}'><strong>{ai_name}:</strong> {message['content']}</span>", 
-                    unsafe_allow_html=True
-                )
-    
-    # Input for user message
-    user_input = st.chat_input("Type your message here...")
-    
-    if user_input:
-        # Reset discussion tracking when a new user message is received
-        st.session_state.waiting_for_summary = False
-        st.session_state.summary_generated = False
-        st.session_state.discussion_counter = 0
-        st.session_state.discussion_messages = []
-        
-        # Add user message to chat history
-        st.session_state.messages.append({"role": "user", "content": user_input})
-        
-        # Rerun to display the new message immediately
-        st.rerun()
+                display_message = user_input
+                process_message = user_input
+            
+            # Reset discussion tracking when a new user message is received
+            st.session_state.waiting_for_summary = False
+            st.session_state.summary_generated = False
+            st.session_state.discussion_counter = 0
+            st.session_state.discussion_messages = []
+            
+            # Add user message to chat history for display
+            st.session_state.messages.append({"role": "user", "content": display_message})
+            
+            # Store the processed message with context for AI processing
+            st.session_state.current_query = process_message
+            
+            # Rerun to display the new message immediately
+            st.rerun()
 
 def check_for_disagreement(recent_messages):
     """Check if there appears to be a disagreement in the recent messages."""
@@ -458,7 +557,44 @@ def generate_ai_responses():
         st.rerun()
 
 def main():
-    """Main application function."""
+    """Main entry point of the application"""
+    # Initialize session state variables
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    
+    if "message_history" not in st.session_state:
+        st.session_state.message_history = []
+        
+    if "active_discussion" not in st.session_state:
+        st.session_state.active_discussion = False
+        
+    if "discussion_counter" not in st.session_state:
+        st.session_state.discussion_counter = 0
+        
+    if "discussion_messages" not in st.session_state:
+        st.session_state.discussion_messages = []
+        
+    if "waiting_for_summary" not in st.session_state:
+        st.session_state.waiting_for_summary = False
+        
+    if "summary_generated" not in st.session_state:
+        st.session_state.summary_generated = False
+        
+    if "last_speaking_ai" not in st.session_state:
+        st.session_state.last_speaking_ai = None
+        
+    if "model_errors" not in st.session_state:
+        st.session_state.model_errors = {}
+        
+    if "max_rounds_per_prompt" not in st.session_state:
+        st.session_state.max_rounds_per_prompt = 5
+        
+    if "config_loaded" not in st.session_state:
+        st.session_state.config_loaded = False
+        
+    if "current_query" not in st.session_state:
+        st.session_state.current_query = None
+
     # Load configuration on first run
     if not st.session_state.config_loaded:
         load_config()
