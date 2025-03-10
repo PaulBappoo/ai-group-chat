@@ -196,12 +196,29 @@ def call_openrouter_api(messages, model, max_tokens=1000):
     }
 
     try:
+        st.sidebar.write(f"Calling OpenRouter API for model: {model}")
         response = requests.post(url, headers=headers, json=data)
+        
+        # Debug response status
+        st.sidebar.write(f"Response status code: {response.status_code}")
+        
+        # Check for error response
+        if response.status_code != 200:
+            error_message = f"API Error: Status {response.status_code}"
+            try:
+                error_data = response.json()
+                if 'error' in error_data:
+                    error_message += f" - {error_data['error']['message']}"
+            except:
+                error_message += f" - {response.text[:100]}"
+                
+            raise requests.exceptions.RequestException(error_message)
+            
         response.raise_for_status()
         return response.json()
     except requests.exceptions.RequestException as e:
-        # Instead of showing an error immediately, store it
-        st.session_state.model_errors[model] = str(e)
+        error_msg = f"API request failed: {str(e)}"
+        st.sidebar.write(error_msg)
         return None
 
 def get_ai_response(ai_name, message_history, is_summary=False):
@@ -210,8 +227,8 @@ def get_ai_response(ai_name, message_history, is_summary=False):
     system_prompt = st.session_state.system_prompts[ai_name]
     
     # Clear any previous errors for this model
-    if model in st.session_state.model_errors:
-        del st.session_state.model_errors[model]
+    if ai_name in st.session_state.model_errors:
+        del st.session_state.model_errors[ai_name]
     
     # Prepare special instructions based on whether this is a normal response or summary
     if is_summary:
@@ -291,7 +308,12 @@ def get_ai_response(ai_name, message_history, is_summary=False):
     
     # Call API
     with st.spinner(f"{ai_name} is {'summarizing the discussion' if is_summary else 'thinking'}..."):
-        response = call_openrouter_api(messages, model, max_tokens=1500 if is_summary else 1000)
+        try:
+            response = call_openrouter_api(messages, model, max_tokens=1500 if is_summary else 1000)
+        except Exception as e:
+            st.sidebar.write(f"Error with {ai_name}: {str(e)}")
+            st.session_state.model_errors[ai_name] = str(e)
+            return None
         
     if response and "choices" in response and len(response["choices"]) > 0:
         content = response["choices"][0]["message"]["content"]
@@ -299,7 +321,12 @@ def get_ai_response(ai_name, message_history, is_summary=False):
         if not is_summary and "SKIP_RESPONSE" in content:
             return None
         return content
-    return None
+    else:
+        # Store error if response is empty or invalid
+        error_msg = "No valid response received"
+        st.session_state.model_errors[ai_name] = error_msg
+        st.sidebar.write(f"Error with {ai_name}: {error_msg}")
+        return None
 
 def chat_view():
     """Display the chat interface."""
@@ -358,6 +385,20 @@ def chat_view():
             st.session_state.setup_complete = False
             st.rerun()
         
+        # Add a reset button to clear the chat history
+        if st.button("🔄 Reset Chat"):
+            st.session_state.messages = []
+            st.session_state.message_history = []
+            st.session_state.active_discussion = False
+            st.session_state.discussion_counter = 0
+            st.session_state.discussion_messages = []
+            st.session_state.waiting_for_summary = False
+            st.session_state.summary_generated = False
+            st.session_state.last_speaking_ai = None
+            st.session_state.model_errors = {}
+            st.session_state.current_query = None
+            st.rerun()
+        
         # Display any model errors in a collapsible section
         if st.session_state.model_errors:
             with st.expander("Model Errors (Click to expand)"):
@@ -391,6 +432,14 @@ def chat_view():
         user_input = st.chat_input("Type your message here...")
         
         if user_input:
+            # Reset discussion tracking when a new user message is received
+            st.session_state.active_discussion = False
+            st.session_state.waiting_for_summary = False
+            st.session_state.summary_generated = False
+            st.session_state.discussion_counter = 0
+            st.session_state.discussion_messages = []
+            st.session_state.last_speaking_ai = None
+            
             # Process user input with document context if available
             if st.session_state.get('has_document', False) and st.session_state.doc_chunks:
                 # Use simple search to find relevant chunks
@@ -410,12 +459,6 @@ def chat_view():
             else:
                 display_message = user_input
                 process_message = user_input
-            
-            # Reset discussion tracking when a new user message is received
-            st.session_state.waiting_for_summary = False
-            st.session_state.summary_generated = False
-            st.session_state.discussion_counter = 0
-            st.session_state.discussion_messages = []
             
             # Add user message to chat history for display
             st.session_state.messages.append({"role": "user", "content": display_message})
@@ -474,6 +517,14 @@ def generate_ai_responses():
     if not st.session_state.messages or st.session_state.active_discussion:
         return
     
+    # Debug information
+    st.sidebar.write("Debug Information:")
+    st.sidebar.write(f"Discussion counter: {st.session_state.discussion_counter}")
+    st.sidebar.write(f"Active discussion: {st.session_state.active_discussion}")
+    st.sidebar.write(f"Waiting for summary: {st.session_state.waiting_for_summary}")
+    st.sidebar.write(f"Summary generated: {st.session_state.summary_generated}")
+    st.sidebar.write(f"Last speaking AI: {st.session_state.last_speaking_ai}")
+    
     # Check if we need to generate a summary
     if st.session_state.waiting_for_summary and not st.session_state.summary_generated:
         generate_summary()
@@ -525,8 +576,12 @@ def generate_ai_responses():
         else:
             next_ai = list(AI_PARTICIPANTS.keys())[0]
         
+        # Add debug information
+        st.sidebar.write(f"Next AI to speak: {next_ai}")
+        
         # Skip models that had errors
-        if AI_PARTICIPANTS[next_ai]["model"] in st.session_state.model_errors:
+        if next_ai in st.session_state.model_errors:
+            st.sidebar.write(f"Skipping {next_ai} due to errors")
             st.session_state.active_discussion = False
             st.session_state.discussion_counter += 1  # Count it as a round even if skipped
             st.rerun()
@@ -541,6 +596,9 @@ def generate_ai_responses():
             st.session_state.discussion_messages.append({"role": next_ai, "content": response})
             st.session_state.last_speaking_ai = next_ai
             st.session_state.discussion_counter += 1
+            st.sidebar.write(f"Response received from {next_ai}")
+        else:
+            st.sidebar.write(f"No response received from {next_ai}")
         
         # Always go to the next round until we reach the limit
         st.session_state.active_discussion = False
@@ -559,6 +617,12 @@ def generate_ai_responses():
 def main():
     """Main entry point of the application"""
     # Initialize session state variables
+    if "openrouter_api_key" not in st.session_state:
+        st.session_state.openrouter_api_key = ""
+        
+    if "setup_complete" not in st.session_state:
+        st.session_state.setup_complete = False
+        
     if "messages" not in st.session_state:
         st.session_state.messages = []
     
@@ -594,6 +658,18 @@ def main():
         
     if "current_query" not in st.session_state:
         st.session_state.current_query = None
+        
+    if "system_prompts" not in st.session_state:
+        st.session_state.system_prompts = DEFAULT_SYSTEM_PROMPTS.copy()
+        
+    if "has_document" not in st.session_state:
+        st.session_state.has_document = False
+        
+    if "doc_chunks" not in st.session_state:
+        st.session_state.doc_chunks = []
+        
+    if "doc_name" not in st.session_state:
+        st.session_state.doc_name = None
 
     # Load configuration on first run
     if not st.session_state.config_loaded:
@@ -612,8 +688,9 @@ def main():
             generate_ai_responses()
         except Exception as e:
             st.error(f"An error occurred: {str(e)}")
-            if not st.session_state.model_errors:
-                st.session_state.model_errors["general"] = str(e)
+            st.sidebar.write(f"Exception in generate_ai_responses: {str(e)}")
+            import traceback
+            st.sidebar.write(traceback.format_exc())
 
 if __name__ == "__main__":
     main() 
