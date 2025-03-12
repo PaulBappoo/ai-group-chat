@@ -202,6 +202,43 @@ def call_openrouter_api(messages, model, max_tokens=1000):
         # Debug response status
         st.sidebar.write(f"Response status code: {response.status_code}")
         
+        # Print the full response for debugging
+        try:
+            response_json = response.json()
+            st.sidebar.write(f"Raw response keys: {list(response_json.keys())}")
+            
+            # Check if we have choices in the response
+            if 'choices' in response_json:
+                st.sidebar.write(f"Number of choices: {len(response_json['choices'])}")
+                
+                # Check the first choice if available
+                if len(response_json['choices']) > 0:
+                    first_choice = response_json['choices'][0]
+                    st.sidebar.write(f"First choice keys: {list(first_choice.keys())}")
+                    
+                    # Check if message exists in the first choice
+                    if 'message' in first_choice:
+                        st.sidebar.write(f"Message keys: {list(first_choice['message'].keys())}")
+                        
+                        # Check content
+                        if 'content' in first_choice['message']:
+                            content_preview = first_choice['message']['content'][:100] + "..." if len(first_choice['message']['content']) > 100 else first_choice['message']['content']
+                            st.sidebar.write(f"Content preview: {content_preview}")
+                        else:
+                            st.sidebar.write("No 'content' in message")
+                    else:
+                        st.sidebar.write("No 'message' in first choice")
+            else:
+                st.sidebar.write("No 'choices' in response")
+                
+                # Check for error in response
+                if 'error' in response_json:
+                    st.sidebar.write(f"Error in response: {response_json['error']}")
+                    
+        except Exception as e:
+            st.sidebar.write(f"Error parsing response JSON: {str(e)}")
+            st.sidebar.write(f"Raw response text: {response.text[:200]}...")
+        
         # Check for error response
         if response.status_code != 200:
             error_message = f"API Error: Status {response.status_code}"
@@ -261,6 +298,11 @@ def get_ai_response(ai_name, message_history, is_summary=False):
     # Prepare messages for API call
     messages = [{"role": "system", "content": combined_prompt}]
     
+    # Log the message history for debugging
+    st.sidebar.write(f"Message history length: {len(message_history)}")
+    if len(message_history) > 0:
+        st.sidebar.write(f"Last message role: {message_history[-1]['role']}")
+    
     # Use the current_query (with document context) for the first AI response
     if len(message_history) > 0 and message_history[-1]["role"] == "user" and hasattr(st.session_state, 'current_query'):
         # Replace the last user message with the enhanced version containing document context
@@ -275,6 +317,7 @@ def get_ai_response(ai_name, message_history, is_summary=False):
         
         # Add the enhanced message with document context
         messages.append({"role": "user", "content": st.session_state.current_query})
+        st.sidebar.write(f"Using enhanced query with document context")
     else:
         # Add message history normally
         for msg in message_history:
@@ -284,6 +327,7 @@ def get_ai_response(ai_name, message_history, is_summary=False):
             if role == "assistant":
                 content = f"[{msg['role']}]: {content}"
             messages.append({"role": role, "content": content})
+        st.sidebar.write(f"Using standard message history")
     
     # Add a special instruction based on the response type
     if is_summary:
@@ -307,26 +351,57 @@ def get_ai_response(ai_name, message_history, is_summary=False):
             })
     
     # Call API
+    st.sidebar.write(f"Sending {len(messages)} messages to {ai_name}")
     with st.spinner(f"{ai_name} is {'summarizing the discussion' if is_summary else 'thinking'}..."):
         try:
             response = call_openrouter_api(messages, model, max_tokens=1500 if is_summary else 1000)
         except Exception as e:
-            st.sidebar.write(f"Error with {ai_name}: {str(e)}")
+            st.sidebar.write(f"Exception with {ai_name}: {str(e)}")
             st.session_state.model_errors[ai_name] = str(e)
             return None
-        
-    if response and "choices" in response and len(response["choices"]) > 0:
-        content = response["choices"][0]["message"]["content"]
-        # Check if the AI decided to skip (only for regular responses, not summaries)
-        if not is_summary and "SKIP_RESPONSE" in content:
-            return None
-        return content
-    else:
-        # Store error if response is empty or invalid
-        error_msg = "No valid response received"
-        st.session_state.model_errors[ai_name] = error_msg
-        st.sidebar.write(f"Error with {ai_name}: {error_msg}")
+    
+    # Handle the response with improved error checking
+    if response is None:
+        st.sidebar.write(f"Empty response from {ai_name}")
+        st.session_state.model_errors[ai_name] = "Empty response from API"
         return None
+    
+    if "choices" not in response:
+        st.sidebar.write(f"No 'choices' in response from {ai_name}")
+        st.session_state.model_errors[ai_name] = "Invalid API response format: missing 'choices'"
+        return None
+    
+    if len(response["choices"]) == 0:
+        st.sidebar.write(f"Empty choices array from {ai_name}")
+        st.session_state.model_errors[ai_name] = "Empty choices array in API response"
+        return None
+    
+    first_choice = response["choices"][0]
+    if "message" not in first_choice:
+        st.sidebar.write(f"No 'message' in first choice from {ai_name}")
+        st.session_state.model_errors[ai_name] = "Invalid API response format: missing 'message'"
+        return None
+    
+    if "content" not in first_choice["message"]:
+        st.sidebar.write(f"No 'content' in message from {ai_name}")
+        st.session_state.model_errors[ai_name] = "Invalid API response format: missing 'content'"
+        return None
+    
+    content = first_choice["message"]["content"]
+    
+    # Check if content is empty
+    if not content or content.strip() == "":
+        st.sidebar.write(f"Empty content from {ai_name}")
+        st.session_state.model_errors[ai_name] = "Empty content in API response"
+        return None
+    
+    # Check if the AI decided to skip (only for regular responses, not summaries)
+    if not is_summary and "SKIP_RESPONSE" in content:
+        st.sidebar.write(f"{ai_name} chose to skip response")
+        return None
+    
+    st.sidebar.write(f"Got valid response from {ai_name} ({len(content)} characters)")
+    return content
 
 def chat_view():
     """Display the chat interface."""
@@ -432,6 +507,9 @@ def chat_view():
         user_input = st.chat_input("Type your message here...")
         
         if user_input:
+            # Add debug information
+            st.sidebar.write(f"Processing user input: {user_input[:50]}...")
+            
             # Reset discussion tracking when a new user message is received
             st.session_state.active_discussion = False
             st.session_state.waiting_for_summary = False
@@ -439,6 +517,7 @@ def chat_view():
             st.session_state.discussion_counter = 0
             st.session_state.discussion_messages = []
             st.session_state.last_speaking_ai = None
+            st.session_state.model_errors = {}
             
             # Process user input with document context if available
             if st.session_state.get('has_document', False) and st.session_state.doc_chunks:
@@ -465,6 +544,10 @@ def chat_view():
             
             # Store the processed message with context for AI processing
             st.session_state.current_query = process_message
+            
+            # Debug information
+            st.sidebar.write(f"Message added to chat history. Total messages: {len(st.session_state.messages)}")
+            st.sidebar.write(f"Current discussion counter: {st.session_state.discussion_counter}")
             
             # Rerun to display the new message immediately
             st.rerun()
@@ -514,7 +597,12 @@ def generate_summary():
 
 def generate_ai_responses():
     """Generate responses from AI participants if needed."""
-    if not st.session_state.messages or st.session_state.active_discussion:
+    if not st.session_state.messages:
+        st.sidebar.write("No messages to process")
+        return
+    
+    if st.session_state.active_discussion:
+        st.sidebar.write("Discussion already active, skipping response generation")
         return
     
     # Debug information
@@ -524,18 +612,22 @@ def generate_ai_responses():
     st.sidebar.write(f"Waiting for summary: {st.session_state.waiting_for_summary}")
     st.sidebar.write(f"Summary generated: {st.session_state.summary_generated}")
     st.sidebar.write(f"Last speaking AI: {st.session_state.last_speaking_ai}")
+    st.sidebar.write(f"Total messages: {len(st.session_state.messages)}")
     
     # Check if we need to generate a summary
     if st.session_state.waiting_for_summary and not st.session_state.summary_generated:
+        st.sidebar.write("Generating summary...")
         generate_summary()
         st.rerun()
         return
     
     # Get the last message
     last_message = st.session_state.messages[-1]
+    st.sidebar.write(f"Last message role: {last_message['role']}")
     
     # If the last message is from a user, start a new discussion
     if last_message["role"] == "user":
+        st.sidebar.write("Starting new discussion based on user message")
         st.session_state.active_discussion = True
         message_history = st.session_state.messages.copy()
         successful_responses = 0
@@ -545,6 +637,7 @@ def generate_ai_responses():
         
         # Let each AI participant respond with their initial thoughts
         for ai_name in AI_PARTICIPANTS.keys():
+            st.sidebar.write(f"Requesting response from {ai_name}")
             response = get_ai_response(ai_name, message_history)
             if response:
                 # Add AI response to chat history
@@ -553,18 +646,23 @@ def generate_ai_responses():
                 st.session_state.discussion_messages.append({"role": ai_name, "content": response})
                 st.session_state.last_speaking_ai = ai_name
                 successful_responses += 1
+                st.sidebar.write(f"Added response from {ai_name} to message history")
+            else:
+                st.sidebar.write(f"No response received from {ai_name}")
         
         # After initial responses, always initiate a follow-up discussion round
         # to encourage collaborative problem-solving
         st.session_state.active_discussion = False
         st.session_state.discussion_counter = 1  # We've completed the first round
+        st.sidebar.write(f"First round completed. Successful responses: {successful_responses}")
         
         # If we got responses, continue to the collaborative discussion phase
         if successful_responses > 0:
             st.rerun()
     
     # Collaborative discussion phase - multiple rounds of follow-ups
-    elif len(st.session_state.messages) >= 2 and st.session_state.discussion_counter < st.session_state.max_rounds_per_prompt:
+    elif st.session_state.discussion_counter < st.session_state.max_rounds_per_prompt:
+        st.sidebar.write(f"Starting discussion round {st.session_state.discussion_counter + 1}")
         # Continue discussion until we reach the max_rounds_per_prompt limit
         st.session_state.active_discussion = True
         
@@ -599,6 +697,9 @@ def generate_ai_responses():
             st.sidebar.write(f"Response received from {next_ai}")
         else:
             st.sidebar.write(f"No response received from {next_ai}")
+            # Still increment the counter and update the last speaking AI so we move to the next one
+            st.session_state.last_speaking_ai = next_ai
+            st.session_state.discussion_counter += 1
         
         # Always go to the next round until we reach the limit
         st.session_state.active_discussion = False
@@ -606,11 +707,13 @@ def generate_ai_responses():
         # Check if we've reached the end of the discussion rounds
         if st.session_state.discussion_counter >= st.session_state.max_rounds_per_prompt:
             st.session_state.waiting_for_summary = True
+            st.sidebar.write("Max rounds reached, waiting for summary")
         
         st.rerun()
     
     # After all discussion rounds, generate a summary
     elif st.session_state.discussion_counter >= st.session_state.max_rounds_per_prompt and not st.session_state.waiting_for_summary:
+        st.sidebar.write("All rounds completed, setting waiting_for_summary to True")
         st.session_state.waiting_for_summary = True
         st.rerun()
 
