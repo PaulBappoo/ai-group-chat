@@ -19,11 +19,11 @@ CONFIG_PATH = Path("config.json")
 # Define AI participants
 AI_PARTICIPANTS = {
     "Claude": {
-        "model": "anthropic/claude-3-haiku",  # Changed to a more widely available Claude model
+        "model": "anthropic/claude-3.7-sonnet",  # Updated to use the more powerful Claude 3.7 Sonnet
         "color": "#9575CD",  # Light purple
     },
-    "GPT-4o": {  # Changed from GPT-3.5 to GPT-4o
-        "model": "openai/gpt-4o",
+    "GPT-o3": {  # Changed from GPT-4o to GPT-o3 Mini High
+        "model": "openai/o3-mini-high",
         "color": "#4CAF50",  # Green
     },
     "Gemini": {  # Changed from Mistral to Gemini
@@ -39,7 +39,7 @@ AI_PARTICIPANTS = {
 # Define default system prompts
 DEFAULT_SYSTEM_PROMPTS = {
     "Claude": "You are Claude, a thoughtful and nuanced AI assistant in a group chat with other AIs and a human. You provide detailed and well-reasoned responses. You should actively engage with ideas from other AIs, building on them or offering alternative perspectives when appropriate. If you don't have anything meaningful to contribute, simply respond with 'SKIP_RESPONSE' and your turn will be skipped.",
-    "GPT-4o": "You are GPT-4o, a versatile and creative AI assistant in a group chat with other AIs and a human. You excel at generating ideas and explaining complex concepts simply. You should actively engage with ideas from other AIs, building on them or offering alternative perspectives when appropriate. If you don't have anything meaningful to contribute, simply respond with 'SKIP_RESPONSE' and your turn will be skipped.",
+    "GPT-o3": "You are GPT-o3, a versatile and creative AI assistant in a group chat with other AIs and a human. You excel at generating ideas and explaining complex concepts simply. You should actively engage with ideas from other AIs, building on them or offering alternative perspectives when appropriate. If you don't have anything meaningful to contribute, simply respond with 'SKIP_RESPONSE' and your turn will be skipped.",
     "Gemini": "You are Gemini, a precise and analytical AI assistant in a group chat with other AIs and a human. You're good at solving problems methodically. You should actively engage with ideas from other AIs, building on them or offering alternative perspectives when appropriate. If you don't have anything meaningful to contribute, simply respond with 'SKIP_RESPONSE' and your turn will be skipped.",
     "Llama": "You are Llama, a direct and concise AI assistant in a group chat with other AIs and a human. You provide straightforward, practical advice. You should actively engage with ideas from other AIs, building on them or offering alternative perspectives when appropriate. If you don't have anything meaningful to contribute, simply respond with 'SKIP_RESPONSE' and your turn will be skipped."
 }
@@ -308,11 +308,26 @@ def get_ai_response(ai_name, message_history, is_summary=False):
         # Replace the last user message with the enhanced version containing document context
         for i in range(len(message_history) - 1):
             msg = message_history[i]
-            role = "assistant" if msg["role"] in AI_PARTICIPANTS else msg["role"]
+            
+            # Skip messages with unsupported roles (like "summary")
+            if msg["role"] == "summary":
+                continue
+                
+            # Map to standard roles: 'system', 'assistant', or 'user'
+            if msg["role"] in AI_PARTICIPANTS:
+                role = "assistant"
+            elif msg["role"] in ["user", "system"]:
+                role = msg["role"]
+            else:
+                # Skip any other non-standard roles
+                continue
+                
             content = msg["content"]
-            # Identify who is speaking for context
+            
+            # Add speaker name for assistant messages to preserve context
             if role == "assistant":
                 content = f"[{msg['role']}]: {content}"
+                
             messages.append({"role": role, "content": content})
         
         # Add the enhanced message with document context
@@ -321,11 +336,25 @@ def get_ai_response(ai_name, message_history, is_summary=False):
     else:
         # Add message history normally
         for msg in message_history:
-            role = "assistant" if msg["role"] in AI_PARTICIPANTS else msg["role"]
+            # Skip messages with unsupported roles (like "summary")
+            if msg["role"] == "summary":
+                continue
+                
+            # Map to standard roles: 'system', 'assistant', or 'user'
+            if msg["role"] in AI_PARTICIPANTS:
+                role = "assistant"
+            elif msg["role"] in ["user", "system"]:
+                role = msg["role"]
+            else:
+                # Skip any other non-standard roles
+                continue
+                
             content = msg["content"]
-            # Identify who is speaking for context
+            
+            # Add speaker name for assistant messages to preserve context
             if role == "assistant":
                 content = f"[{msg['role']}]: {content}"
+                
             messages.append({"role": role, "content": content})
         st.sidebar.write(f"Using standard message history")
     
@@ -349,6 +378,9 @@ def get_ai_response(ai_name, message_history, is_summary=False):
                 "role": "user", 
                 "content": f"It's now your turn as {ai_name} to continue the discussion. Consider the perspectives already shared and build upon them, add new insights, or help synthesize toward a collective solution. If you don't have anything meaningful to add, respond with 'SKIP_RESPONSE'."
             })
+    
+    # Log the formatted messages
+    st.sidebar.write(f"Formatted {len(messages)} messages with roles: {[msg['role'] for msg in messages]}")
     
     # Call API
     st.sidebar.write(f"Sending {len(messages)} messages to {ai_name}")
@@ -490,18 +522,31 @@ def chat_view():
             for message in st.session_state.messages:
                 if message["role"] == "user":
                     st.chat_message("user", avatar="👤").write(message["content"])
-                elif message["role"] == "summary":
-                    # Display summary in a distinctive way
-                    st.markdown("---")
-                    st.markdown(message["content"], unsafe_allow_html=True)
-                    st.markdown("---")
                 else:
+                    # It's an AI message (no more "summary" role)
                     ai_name = message["role"]
-                    color = AI_PARTICIPANTS[ai_name]["color"]
-                    st.chat_message(ai_name, avatar=f"🤖").markdown(
-                        f"<span style='color:{color}'><strong>{ai_name}:</strong> {message['content']}</span>", 
-                        unsafe_allow_html=True
-                    )
+                    content = message["content"]
+                    
+                    # Check if this is a summary message (starts with ## Discussion Summary)
+                    if "## Discussion Summary" in content:
+                        # Display summary in a distinctive way
+                        st.markdown("---")
+                        st.markdown(content, unsafe_allow_html=True)
+                        st.markdown("---")
+                    else:
+                        # Regular AI message
+                        if ai_name in AI_PARTICIPANTS:
+                            color = AI_PARTICIPANTS[ai_name]["color"]
+                            st.chat_message(ai_name, avatar=f"🤖").markdown(
+                                f"<span style='color:{color}'><strong>{ai_name}:</strong> {content}</span>", 
+                                unsafe_allow_html=True
+                            )
+                        else:
+                            # Fallback for AI names not in participants
+                            st.chat_message("assistant", avatar=f"🤖").markdown(
+                                f"<strong>{ai_name}:</strong> {content}", 
+                                unsafe_allow_html=True
+                            )
     
         # Input for user message
         user_input = st.chat_input("Type your message here...")
@@ -585,13 +630,26 @@ def generate_summary():
     # Choose the AI that will generate the summary (using Claude for better summarization)
     summarizer_ai = "Claude"
     
+    # Log what we're doing
+    st.sidebar.write(f"Generating summary using {summarizer_ai}")
+    st.sidebar.write(f"Discussion messages: {len(st.session_state.discussion_messages)}")
+    
+    # Filter out any summary messages from discussion messages
+    filtered_messages = [msg for msg in st.session_state.discussion_messages if msg["role"] != "summary"]
+    st.sidebar.write(f"Filtered messages for summary: {len(filtered_messages)}")
+    
     # Get the summary
-    summary = get_ai_response(summarizer_ai, st.session_state.discussion_messages, is_summary=True)
+    summary = get_ai_response(summarizer_ai, filtered_messages, is_summary=True)
     
     if summary:
-        # Add the summary to the chat history
-        st.session_state.messages.append({"role": "summary", "content": summary})
+        # Instead of adding with role "summary", add as a message from the summarizer_ai
+        # but mark it visually in the content
+        formatted_summary = f"## Discussion Summary\n\n{summary}"
+        st.session_state.messages.append({"role": summarizer_ai, "content": formatted_summary})
         st.session_state.summary_generated = True
+        st.sidebar.write("Summary generated successfully")
+    else:
+        st.sidebar.write("Failed to generate summary")
     
     st.session_state.waiting_for_summary = False
 
